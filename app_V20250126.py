@@ -152,7 +152,7 @@ def create_split_evolution_charts(df_final):
                     axis=alt.Axis(
                         title='DM Status',
                         values=[0, 1],
-                        labelExpr="datum.value === 0 ? 'No' : 'Yes'"
+                        labelExpr="datum.value === 0 ? 'Healed' : 'Diabettes'"
                     )),
             tooltip=['Time:N', 'DM:Q']
         )
@@ -212,6 +212,167 @@ def create_split_evolution_charts(df_final):
 
     return final_bmi_chart, final_dm_chart
 
+###############################################################################
+def create_animated_evolution_chart(df_final, clf_model, predictions_df):
+    # Define time points and their labels in the correct order
+    time_map = {
+        'Pre': 0,
+        '3m': 1,
+        '6m': 2,
+        '12m': 3,
+        '18m': 4,
+        '2y': 5,
+        '3y': 6,
+        '4y': 7,
+        '5y': 8
+    }
+    time_points = list(time_map.keys())
+    
+    # Get column names in correct order
+    bmi_columns = ['BMI before surgery', 'bmi3', 'bmi6', 'bmi12', 'bmi18', 'bmi2y', 'bmi3y', 'bmi4y', 'bmi5y']
+    dm_columns = ['DMII_preoperative', 'dm3m', 'dm6m', 'dm12m', 'dm18m', 'dm2y', 'dm3y', 'dm4y', 'dm5y']
+    probas_columns = ['DMII_preoperative_prob',
+                      'dm3m_prob',
+                      'dm6m_prob',
+                      'dm12m_prob',
+                      'dm18m_prob',
+                      'dm2y_prob',
+                      'dm3y_prob',
+                      'dm4y_prob',
+                      'dm5y_prob']
+    
+    # Create chart placeholder
+    chart_placeholder = st.empty()
+    
+    # Get DM probabilities for all timesteps
+    dm_probs = df_final[probas_columns].iloc[0].values
+    
+    # Calculate y-axis domain for BMI
+    bmi_max = df_final[bmi_columns].max().max() * 1.1
+    bmi_min = min(df_final[bmi_columns].min().min() * 0.9, 25 * 0.9)
+    
+    # Animation loop
+    for i in range(1, len(time_points) + 1):
+        # Get current data slices
+        current_bmi_values = df_final[bmi_columns].iloc[0, :i].values
+        current_times = time_points[:i]
+        
+        # Calculate confidence intervals
+        current_bmi_ci_lower = current_bmi_values * 0.95
+        current_bmi_ci_upper = current_bmi_values * 1.05
+        
+        # Create current BMI dataframe
+        current_bmi_data = pd.DataFrame({
+            'Time': current_times * 3,
+            'BMI': np.concatenate([current_bmi_values, current_bmi_ci_lower, current_bmi_ci_upper]),
+            'Type': ['actual'] * len(current_times) + ['ci_lower'] * len(current_times) + ['ci_upper'] * len(current_times),
+            'order': [time_map[t] for t in current_times] * 3
+        })
+        
+        # Create current DM dataframe
+        current_dm_data = pd.DataFrame({
+            'Time': current_times,
+            'DM_Status': df_final[dm_columns].iloc[0, :i].values,
+            'DM_Probability': dm_probs[:i],
+            'order': [time_map[t] for t in current_times]
+        })
+        
+        # Create base chart
+        base = alt.Chart().encode(
+            x=alt.X('Time:N',
+                    sort=list(time_map.keys()),  # Explicitly set sort order
+                    title='Time')
+        )
+        
+        # BMI line with confidence interval
+        bmi_area = alt.Chart(current_bmi_data).mark_area(
+            opacity=0.2,
+            color='blue'
+        ).encode(
+            x=alt.X('Time:N', sort=list(time_map.keys())),
+            y=alt.Y('BMI:Q',
+                    title='BMI Value',
+                    scale=alt.Scale(domain=[bmi_min, bmi_max])),
+            y2=alt.Y2('ci_lower:Q')
+        ).transform_filter(
+            alt.datum.Type == 'ci_upper'
+        )
+        
+        # BMI line (smoothed)
+        bmi_line = alt.Chart(current_bmi_data).mark_line(
+            strokeWidth=2,
+            color='blue',
+            point=True,
+            interpolate='monotone'
+        ).encode(
+            x=alt.X('Time:N', sort=list(time_map.keys())),
+            y=alt.Y('BMI:Q',
+                    scale=alt.Scale(domain=[bmi_min, bmi_max])),
+            tooltip=['Time:N', alt.Tooltip('BMI:Q', format='.1f')]
+        ).transform_filter(
+            alt.datum.Type == 'actual'
+        )
+        
+        # BMI threshold line
+        threshold_data = pd.DataFrame({
+            'Time': current_times,
+            'threshold': [25] * len(current_times),
+            'order': [time_map[t] for t in current_times]
+        })
+        
+        threshold_line = alt.Chart(threshold_data).mark_line(
+            strokeWidth=2,
+            strokeDash=[4, 4],
+            color='green'
+        ).encode(
+            x=alt.X('Time:N', sort=list(time_map.keys())),
+            y=alt.Y('threshold:Q',
+                    scale=alt.Scale(domain=[bmi_min, bmi_max]))
+        )
+        
+        # DM probability bars
+        dm_bars = alt.Chart(current_dm_data).mark_bar(
+            opacity=0.3,
+            color='red'
+        ).encode(
+            x=alt.X('Time:N', sort=list(time_map.keys())),
+            y=alt.Y('DM_Probability:Q',
+                    title='DM Probability',
+                    scale=alt.Scale(domain=[0, 1]),
+                    axis=alt.Axis(orient='right')),
+            tooltip=['Time:N', 
+                    alt.Tooltip('DM_Probability:Q', format='.2%'),
+                    alt.Tooltip('DM_Status:Q', title='DM Status')]
+        )
+        
+        # First layer: BMI-related charts
+        bmi_layer = alt.layer(bmi_area, bmi_line, threshold_line).encode(
+            y=alt.Y('BMI:Q', title='BMI Value', scale=alt.Scale(domain=[bmi_min, bmi_max]))
+        )
+        
+        # Combine all elements with proper axis resolution
+        combined_chart = alt.layer(
+            bmi_layer,
+            dm_bars
+        ).resolve_scale(
+            y='independent'
+        ).resolve_axis(
+            y='independent'
+        ).properties(
+            width=700,
+            height=400,
+            title=f'BMI Evolution and DM Probability Over Time (Step {i}/{len(time_points)})'
+        )
+        
+        # Update the chart
+        chart_placeholder.altair_chart(combined_chart)
+        
+        # Animation delay
+        time.sleep(0.5)
+    
+    return combined_chart
+  
+    
 # Make a dictionary of categorical features
 dictionary_categorical_features = {'sex (1 = female, 2=male)' : {'Male' : 2,
                                                                  'Female' : 1},
@@ -377,10 +538,21 @@ def parser_user_input(dataframe_input , reg_model , clf_model):
                       'bmi3y',
                       'bmi4y',
                       'bmi5y']
+    probas_columns = ['DMII_preoperative_prob',
+                      'dm3m_prob',
+                      'dm6m_prob',
+                      'dm12m_prob',
+                      'dm18m_prob',
+                      'dm2y_prob',
+                      'dm3y_prob',
+                      'dm4y_prob',
+                      'dm5y_prob']
     # Placeholder for final vector
     df_final = df_classification.copy()
     df_final[target_columns] = np.nan # Fill all future predictions with nan
     df_final['DMII_preoperative'] = df_classification['DMII_preoperative']
+    df_final[probas_columns] = np.nan
+    df_final[probas_columns[0]] = 1 if df_final[target_columns[0]].values[0] == 1 else 0
     # Identify the columns and their corresponding time steps for faster access
     time_step_map = {col: target_time_steps[col] for col in target_columns}
     
@@ -407,23 +579,28 @@ def parser_user_input(dataframe_input , reg_model , clf_model):
     
                     aux_x = aux_x[clf_model.feature_names_in_.tolist()]  # Ensure correct column order
                     predictions.append(aux_x)
-                    rows_to_update.append((row_index, dm_t_plus1))
+                    rows_to_update.append((row_index, dm_t_plus1 , probas_columns[iterations.index([dm_t , dm_t_plus1]) + 1]))
     
         # Predict in batches
         if predictions:
             predictions_df = pd.concat(predictions, ignore_index=True)
             predicted_values = clf_model.predict(predictions_df)
+            predicted_probas = clf_model.predict_proba(predictions_df)[: , 1]
     
             # Update the DataFrame with predictions
-            for (row_index, target_column), prediction in zip(rows_to_update, predicted_values):
+            for (row_index, target_column , prob_column), prediction , probas in zip(rows_to_update, predicted_values , predicted_probas):
                 df_final.at[row_index, target_column] = prediction
+                df_final.at[row_index, prob_column] = probas
+                
         if counter > 9:
             break
         else:
             counter += 1
+            
     
     # Plot
-    create_split_evolution_charts(df_final)
+    #create_split_evolution_charts(df_final)
+    chart = create_animated_evolution_chart(df_final, clf_model, predictions_df)
     
     return predictions
 
