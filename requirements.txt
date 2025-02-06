@@ -7,4 +7,3 @@ streamlit_option_menu==0.3.6
 altair==5.2.0
 seaborn
 xgboost==2.0.3
-imblearn
