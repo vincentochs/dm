@@ -2,7 +2,7 @@
 """
 Created on Sun Jan 26 21:31:05 2025
 
-@author: Edgar David
+@author: Vincent Ochs
 
 This script is used for generating an app for regression and classification
 task
@@ -166,7 +166,7 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
     <div style="font-size:16px;">
         <span style="color:blue;">Predicted BMI Progression</span> is shown in blue, 
         <span style="color:orange;">its CI</span> is shown in orange, 
-        <span style="color:red;">Minimum BMI Threshold that predict diabetes remission in next period</span> is indicated in red, 
+        <span style="color:red;">Maximum BMI Threshold that predict diabetes remission in next period</span> is indicated in red, 
         and the threshold to a <span style="color:green;">Healthy BMI (<25)</span> is highlighted in green.
     </div>
     """, unsafe_allow_html=True)
@@ -356,40 +356,40 @@ def find_bmi_thresholds_speed(clf_model, df_final, time_points=['Pre', '3m', '6m
         '3y': ('bmi3y', 'dm4y', 6, 'dm3y'),
         '4y': ('bmi4y', 'dm5y', 7, 'dm4y'),
     }
-
+    
     for time_point in time_points:
         bmi_col, next_dm_col, time_step, dm_current = time_map[time_point]
-
         # Expand df_final for all BMI values
         n_samples = len(df_final)
         n_bmi = len(bmi_range)
-
         # Repeat df_final n_bmi times (efficient broadcasting)
         expanded_data = pd.concat([df_final] * n_bmi, ignore_index=True)
         expanded_data[bmi_col] = np.tile(bmi_range, n_samples)
-
         # Set DM(t) and time_step
         expanded_data['DM(t)'] = expanded_data[dm_current]
         expanded_data['time_step'] = time_step
-
         # Select relevant features
         features = expanded_data[clf_model.feature_names_in_]
-
         # Make batch predictions
         pred_probs = clf_model.predict_proba(features)[:, 1]
-
-        # Reshape to (n_samples, n_bmi) to find first occurrence where prob < 0.5
+        # Reshape to (n_samples, n_bmi) to find last occurrence where prob < 0.5
         pred_probs = pred_probs.reshape(n_samples, n_bmi)
         mask = pred_probs < 0.5
-
-        # Find first BMI value where the probability is < 0.5
-        threshold_indices = np.argmax(mask, axis=1)
-        valid_thresholds = mask[np.arange(n_samples), threshold_indices]
-
+        
+        # Find the last BMI value where probability is < 0.5
+        # First flip the arrays horizontally to find the first True from the right
+        flipped_mask = np.fliplr(mask)
+        flipped_pred_probs = np.fliplr(pred_probs)
+        threshold_indices = np.argmax(flipped_mask, axis=1)
+        valid_thresholds = flipped_mask[np.arange(n_samples), threshold_indices]
+        
+        # Convert the indices back to the original array orientation
+        threshold_indices = n_bmi - 1 - threshold_indices
+        
         # Extract threshold BMI or mark as "No threshold found"
         threshold_bmi = np.where(valid_thresholds, bmi_range[threshold_indices], "No threshold found")
         prob_at_threshold = np.where(valid_thresholds, pred_probs[np.arange(n_samples), threshold_indices], None)
-
+        
         # Store results
         thresholds.append(pd.DataFrame({
             'Time Point': time_point,
@@ -397,7 +397,7 @@ def find_bmi_thresholds_speed(clf_model, df_final, time_points=['Pre', '3m', '6m
             'Next Time Point': next_dm_col,
             'Probability at Threshold': prob_at_threshold
         }))
-
+    
     return pd.concat(thresholds, ignore_index=True)
 
 
