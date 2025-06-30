@@ -53,9 +53,9 @@ dictionary_categorical_features = {'sex (1 = female, 2=male)' : {'Male' : 2,
                                                                     'No' : 0},
                                    'osas_preoperative' : {'Yes' : 1,
                                                           'No' : 0},
-                                   'surgery' : {'Laparoscopic Sleeve Gastrectomy' : 1,
-                                                'Roux-en-Y Bypass' : 2,
-                                                'OAGB' : 5},
+                                   'surgery' : {'Laparoscopic Sleeve Gastrectomy (LSG)' : 1,
+                                                'Laparoscopic Roux-en-Y Gastric Bypass (LRYGB)' : 2},
+                                   
                                    'normal_dmII_pattern' : {'Yes' : 1,
                                                             'No' : 0},
                                    'months' :  {'Preoperative' : 0,
@@ -75,23 +75,37 @@ dictionary_categorical_features = {'sex (1 = female, 2=male)' : {'Male' : 2,
                                                   'bmi2y' : 5,
                                                   'bmi3y' : 6,
                                                   'bmi4y' : 7,
-                                                  'bmi5y' : 8}
+                                                  'bmi5y' : 8},
+                                   'asa_score' : {'1' : 1,
+                                                  '2' : 2,
+                                                  '3' : 3,
+                                                  '4' : 4},
+                                   'antidiab_drug_preop_no_therapy' : {'Yes' : 1,
+                                                                       'No' : 0},
+                                   'antidiab_drug_preop_glp1_analogen' : {'Yes' : 1,
+                                                                          'No' : 0},
+                                   'comorbid_1_Myocardial_infarct' : {'Yes' : 1,
+                                                                      'No' : 0},
+                                   'comorbid_2_heart_failure' : {'Yes' : 1,
+                                                                 'No' : 0},
+                                   'comorbid_6_pulmonary_disease' : {'Yes' : 1,
+                                                                     'No' : 0}
                                    }
 
 inverse_dictionary = {feature: {v: k for k, v in mapping.items()} 
                       for feature, mapping in dictionary_categorical_features.items()}
 # MAE from training notebook for make confident intervals
-training_mae = 2.26287611774099
+training_mae = 2.5
 
 ##############################################################################
 # Section when the app initialize and load the required information
 @st.cache_data() # We use this decorator so this initialization doesn't run every time the user change into the page
 def initialize_app():
     # Load Regression Model
-    with open('000_Regression_Model.sav' , 'rb') as export_model:
+    with open(r'models\001_Regression_Model.sav' , 'rb') as export_model:
         regression_model = pickle.load(export_model) 
     # Load Classification Model
-    with open('000_Classification_Model.sav' , 'rb') as export_model:
+    with open(r'models\001_Classification_Model.sav' , 'rb') as export_model:
         classification_model = pickle.load(export_model) 
 
     print('App Initialized correctly!')
@@ -114,13 +128,21 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
     bmi_columns = ['BMI before surgery', 'bmi3', 'bmi6', 'bmi12', 
                   'bmi18', 'bmi2y', 'bmi3y', 'bmi4y', 'bmi5y']
     
+    # Get DM probabilities columns in correct order
+    dm_prob_columns = ['DMII_preoperative_prob', 'dm3m_prob', 'dm6m_prob', 'dm12m_prob', 
+                      'dm18m_prob', 'dm2y_prob', 'dm3y_prob', 'dm4y_prob', 'dm5y_prob']
+    
     # Create chart placeholder
     chart_placeholder = st.empty()
+    prob_placeholder = st.empty()  # Placeholder for probability display
     
     # Get all BMI values and confidence intervals
     bmi_values = df_final[bmi_columns].iloc[0].values
     ci_lower_values = df_final[[f'{col}_ci_lower' for col in bmi_columns]].iloc[0].values
     ci_upper_values = df_final[[f'{col}_ci_upper' for col in bmi_columns]].iloc[0].values
+    
+    # Get DM probabilities
+    dm_probabilities = df_final[dm_prob_columns].iloc[0].values
     
     # Calculate y-axis domain including thresholds
     if threshold_values is not None:
@@ -140,17 +162,16 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
     smooth_bmi_values = make_interp_spline(time_points_values, bmi_values)(smooth_years)
     smooth_bmi_upper = make_interp_spline(time_points_values, ci_upper_values)(smooth_years)
     smooth_bmi_lower = make_interp_spline(time_points_values, ci_lower_values)(smooth_years)
+    
+    smooth_dm_probabilities = make_interp_spline(time_points_values, dm_probabilities)(smooth_years)
+    smooth_dm_probabilities = np.array(list(map(lambda x: 1 if x > 1 else x, smooth_dm_probabilities)))
+    
     if threshold_values is None:
         smooth_threshold_bmi = [0] * len(smooth_years)
     else:
         smooth_threshold_bmi = make_interp_spline(time_points_values, threshold_values['BMI Threshold'].values.tolist() + [0])(smooth_years)
         smooth_threshold_bmi = np.array(list(map(lambda x: 0 if x < 0 else x , smooth_threshold_bmi)))
     
-    #print(smooth_years)
-    #print(smooth_bmi_values)
-    #print(smooth_bmi_upper)
-    #print(smooth_bmi_lower)
-    #print(smooth_threshold_bmi)
     
     # Healthy BMI Thin Line
     healthy_bmi_line = pd.DataFrame({
@@ -166,14 +187,15 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
     <div style="font-size:16px;">
         <span style="color:blue;">Predicted BMI Progression</span> is shown in blue, 
         <span style="color:orange;">its CI</span> is shown in orange, 
-        <span style="color:red;">Maximum BMI Threshold that predict diabetes remission in next period</span> is indicated in red, 
         and the threshold to a <span style="color:green;">Healthy BMI (<25)</span> is highlighted in green.
     </div>
     """, unsafe_allow_html=True)
 
     chart_placeholder = st.empty()  # Placeholder for the chart
+    prob_placeholder = st.empty()   # Placeholder for probability display
     total_steps = len(smooth_years)  # Total steps for smooth animation
     print(f"Total Steps: {total_steps}. Len smooth years:{len(smooth_years)}")
+    
     # Build animated chart
     for i in range(1, total_steps + 1, 1):  # Adjust steps for full range
         # Update chart dynamically
@@ -182,6 +204,11 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
         current_smooth_bmi_upper = smooth_bmi_upper[:i]
         current_smooth_bmi_lower = smooth_bmi_lower[:i]
         current_smooth_bmi_threshold = smooth_threshold_bmi[:i]
+        current_smooth_dm_prob = smooth_dm_probabilities[:i]
+        
+        # Get current time point and probability for display
+        current_time_months = smooth_years[i-1]
+        current_dm_probability = smooth_dm_probabilities[i-1]
         
         # Create data for dynamic charts
         current_chart_data = pd.DataFrame({
@@ -208,8 +235,8 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
             color=alt.Color(
                 "Line",
                 scale=alt.Scale(
-                    domain=["Predicted BMI", "CI", "Healthy BMI" , "Threshold BMI"],
-                    range=["blue", "orange", "green" , 'red']  # Explicit color mapping
+                    domain=["Predicted BMI", "CI", "Healthy BMI"],
+                    range=["blue", "orange", "green"]  # Explicit color mapping
                 ),
                 legend=alt.Legend(title="Legend")
             ),
@@ -225,8 +252,8 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
             color=alt.Color(
                 "Line",
                 scale=alt.Scale(
-                    domain=["Predicted BMI", "CI", "Healthy BMI" , 'Threshold BMI'],
-                    range=["blue", "orange", "green" , 'red']  # Explicit color mapping
+                    domain=["Predicted BMI", "CI", "Healthy BMI"],
+                    range=["blue", "orange", "green"]  # Explicit color mapping
                 ),
                 legend=None
             ),
@@ -241,8 +268,8 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
             color=alt.Color(
                 "Line",
                 scale=alt.Scale(
-                    domain=["Predicted BMI", "CI", "Healthy BMI" , 'Threshold BMI'],
-                    range=["blue", "orange", "green" , 'red']  # Explicit color mapping
+                    domain=["Predicted BMI", "CI", "Healthy BMI"],
+                    range=["blue", "orange", "green" ]  # Explicit color mapping
                 ),
                 legend=None
             ),
@@ -258,8 +285,8 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
             color=alt.Color(
                 "Line",
                 scale=alt.Scale(
-                    domain=["Predicted BMI", "CI", "Healthy BMI" , 'Threshold BMI'],
-                    range=["blue", "orange", "green" , 'red']  # Explicit color mapping
+                    domain=["Predicted BMI", "CI", "Healthy BMI"],
+                    range=["blue", "orange", "green"]  # Explicit color mapping
                 ),
                 legend=None
             ),
@@ -282,7 +309,38 @@ def create_animated_evolution_chart(df_final, clf_model, predictions_df, thresho
         )
 
         chart_placeholder.altair_chart(final_chart)
+        
+        # Display current DM probability below the chart
+        prob_status = "High Risk" if current_dm_probability > 0.5 else "Low Risk"
+        prob_color = "red" if current_dm_probability > 0.5 else "green"
+        
+        # Convert months to a more readable format
+        if current_time_months == 0:
+            time_label = "Pre-operative"
+        elif current_time_months < 12:
+            time_label = f"{current_time_months:.0f} months"
+        elif current_time_months == 12:
+            time_label = "1 year"
+        else:
+            years = current_time_months / 12
+            time_label = f"{years:.1f} years"
+        
         time.sleep(0.1)  # Animation delay
+    
+    # Only render the risk advise if the patient has preoperatibe Diabettes Mellitus Type 2
+    if df_final['DMII_preoperative'].values[0] == 1:
+        prob_placeholder.markdown(f"""
+        <div style="text-align: center; padding: 20px; background-color: #f0f2f6; border-radius: 10px; margin: 10px 0;">
+            <h3 style="margin: 0; color: #333;">Current Diabetes Risk Assessment</h3>
+            <p style="font-size: 18px; margin: 10px 0; color: #666;">Time Point: <strong>{time_label}</strong></p>
+            <p style="font-size: 24px; margin: 10px 0; color: {prob_color}; font-weight: bold;">
+                Diabetes Probability: {current_dm_probability:.1%}
+            </p>
+            <p style="font-size: 20px; margin: 0; color: {prob_color}; font-weight: bold;">
+                Risk Level: {prob_status}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
     
 ###############################################################################
 def find_bmi_thresholds(clf_model, df_final, time_points=['Pre', '3m', '6m', '12m', '18m', '2y', '3y', '4y']):
@@ -425,8 +483,6 @@ def display_threshold_analysis(threshold_df):
 
 # Parser input information
 def parser_user_input(dataframe_input , reg_model , clf_model):
-    
-    
     ##########################################################################
     # Regression part
     
@@ -593,6 +649,18 @@ def parser_user_input(dataframe_input , reg_model , clf_model):
             predictions_df = pd.concat(predictions, ignore_index=True)
             predicted_values = clf_model.predict(predictions_df)
             predicted_probas = clf_model.predict_proba(predictions_df)[: , 1]
+            
+            # Hard code adjustment deppending of patients information
+            
+            # 1. Remission odds decline especially >50–60 years of age.
+            print('Adjustment of DM likelihood')
+            print(f"Original probs: {predicted_probas}")
+            predicted_probas = np.select(condlist = [(predictions_df['age_years'] > 50)&(predictions_df['age_years'] < 60)],
+                                         choicelist = [np.max(predicted_probas - 0.02 , 0)],
+                                         default = predicted_probas)
+            print(f"Probas changed by age: {predicted_probas}")
+
+            
     
             # Update the DataFrame with predictions
             for (row_index, target_column , prob_column), prediction , probas in zip(rows_to_update, predicted_values , predicted_probas):
@@ -719,6 +787,7 @@ if selected == 'Prediction':
     st.sidebar.subheader("Please choose parameters")
     
     # Input features
+    st.sidebar.subheader("Basic Information:")
     age = st.sidebar.number_input("Age(Years):" , step = 1.0)
     bmi_pre = st.sidebar.number_input("Preoperative BMI:" , step = 0.5)
     
@@ -727,23 +796,47 @@ if selected == 'Prediction':
         options = tuple(dictionary_categorical_features['sex (1 = female, 2=male)'].keys()),
     )
     
+    #asa_score = st.sidebar.radio(
+    #    "Select ASA Score:",
+    #    options = tuple(dictionary_categorical_features['asa_score'].keys()),
+    #)
+    
     # Input: Binary data
     st.sidebar.subheader("Medical Conditions (Yes/No):")
     hypertension = int(st.sidebar.checkbox("Hypertension"))
     hyperlipidemia = int(st.sidebar.checkbox('Hyperlipidemia'))
-    depression = int(st.sidebar.checkbox('Depression'))
-    DMII_preoperative = int(st.sidebar.checkbox('Diabetes Mellitus Preoperative'))
-    antidiab_drug_preop_Oral_anticogulation = int(st.sidebar.checkbox('Antidiabetes drug preoperative oral anticogulation'))
-    antidiab_drug_preop_Insulin = int(st.sidebar.checkbox('Antidiabetes drug preoperative insulin'))
-    prior_abdominal_surgery = int(st.sidebar.checkbox('Prior abdominal surgery'))
-    osas_preoperative = int(st.sidebar.checkbox('Obstructive Sleep Apnea Syndrome (OSAS)'))
+    #depression = int(st.sidebar.checkbox('Depression'))
+    DMII_preoperative = int(st.sidebar.checkbox('Diabetes Mellitus Type 2'))
+    #antidiab_drug_preop_Oral_anticogulation = int(st.sidebar.checkbox('Antidiabetes drug preoperative oral anticogulation'))
+    #antidiab_drug_preop_Insulin = int(st.sidebar.checkbox('Antidiabetes drug preoperative insulin'))
+    #prior_abdominal_surgery = int(st.sidebar.checkbox('Prior abdominal surgery'))
+    #osas_preoperative = int(st.sidebar.checkbox('Obstructive Sleep Apnea Syndrome (OSAS)'))
+    #antidiab_drug_preop_no_therapy = int(st.sidebar.checkbox('Antidiabetes drug preoperative - No Therapy'))
+    #antidiab_drug_preop_glp1_analogen = int(st.sidebar.checkbox('Antidiabetes drug preoperative - GLP1 Analogen'))
+    #comorbid_1_Myocardial_infarct = int(st.sidebar.checkbox('Myocardial Infarct'))
+    #comorbid_2_heart_failure = int(st.sidebar.checkbox('Heart Failure'))
+    #comorbid_6_pulmonary_disease = int(st.sidebar.checkbox('Pulmonary Disease'))
     #normal_dmII_pattern = int(st.sidebar.checkbox('Normal Diabetes Mellitus Type 2 pattern'))
     
     # Surgery Type
+    st.sidebar.subheader("Planned Surgery (Select an option):")
     surgery = st.sidebar.radio(
         "Planned Surgery:",
         options = tuple(dictionary_categorical_features['surgery'].keys()),
     )
+    
+    
+    # As there is missing input data, we have to set some default values
+    depression = 0 # No depression
+    antidiab_drug_preop_Oral_anticogulation = 0 # No use of this drug
+    antidiab_drug_preop_Oral_anticogulation = 0 # No use of this drug
+    antidiab_drug_preop_Insulin = 0 # No use of this drug
+    osas_preoperative = 0 # No OSAS preoperative
+    antidiab_drug_preop_no_therapy = 1 # No theraphy
+    antidiab_drug_preop_glp1_analogen = 0 # No use of this drug
+    comorbid_1_Myocardial_infarct = 0 # No myocardial infarct
+    comorbid_2_heart_failure = 0 # No heart failure
+    comorbid_6_pulmonary_disease = 0 # No pulmonary disease 
     
     # Map binary options
     hypertension = inverse_dictionary['hypertension'][hypertension]
@@ -752,21 +845,29 @@ if selected == 'Prediction':
     DMII_preoperative = inverse_dictionary['DMII_preoperative'][DMII_preoperative]
     antidiab_drug_preop_Oral_anticogulation = inverse_dictionary['antidiab_drug_preop_Oral_anticogulation'][antidiab_drug_preop_Oral_anticogulation]
     antidiab_drug_preop_Insulin = inverse_dictionary['antidiab_drug_preop_Insulin'][antidiab_drug_preop_Insulin]
-    prior_abdominal_surgery = inverse_dictionary['prior_abdominal_surgery'][prior_abdominal_surgery]
+    #prior_abdominal_surgery = inverse_dictionary['prior_abdominal_surgery'][prior_abdominal_surgery]
     osas_preoperative = inverse_dictionary['osas_preoperative'][osas_preoperative]
+    antidiab_drug_preop_no_therapy = inverse_dictionary['antidiab_drug_preop_no_therapy'][antidiab_drug_preop_no_therapy]
+    antidiab_drug_preop_glp1_analogen = inverse_dictionary['antidiab_drug_preop_glp1_analogen'][antidiab_drug_preop_glp1_analogen]
     #normal_dmII_pattern = inverse_dictionary['normal_dmII_pattern'][normal_dmII_pattern]
     normal_dmII_pattern = 'No'
     # Create dataframe with the input data
     dataframe_input = pd.DataFrame({'age_years' : [age],
                                     'BMI(t)' : [bmi_pre],
                                     'sex (1 = female, 2=male)' : [sex],
-                                    'prior_abdominal_surgery' : [prior_abdominal_surgery],
+                                    'comorbid_1_Myocardial_infarct' : [comorbid_1_Myocardial_infarct],
+                                    'comorbid_2_heart_failure' : [comorbid_2_heart_failure],
+                                    'comorbid_6_pulmonary_disease' : [comorbid_6_pulmonary_disease],
+                                    #'asa_score' : [asa_score],
+                                    #'prior_abdominal_surgery' : [prior_abdominal_surgery],
                                     'hypertension' : [hypertension],
                                     'hyperlipidemia' : [hyperlipidemia],
                                     'depression' : [depression],
                                     'DMII_preoperative' : [DMII_preoperative],
                                     'antidiab_drug_preop_Oral_anticogulation' : [antidiab_drug_preop_Oral_anticogulation],
                                     'antidiab_drug_preop_Insulin' : [antidiab_drug_preop_Insulin],
+                                    'antidiab_drug_preop_no_therapy' : [antidiab_drug_preop_no_therapy],
+                                    'antidiab_drug_preop_glp1_analogen' : [antidiab_drug_preop_glp1_analogen],
                                     'osas_preoperative' : [osas_preoperative],
                                     'surgery' : [surgery],
                                     'normal_dmII_pattern' : [normal_dmII_pattern]})
