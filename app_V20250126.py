@@ -102,10 +102,10 @@ training_mae = 2.5
 @st.cache_data() # We use this decorator so this initialization doesn't run every time the user change into the page
 def initialize_app():
     # Load Regression Model
-    with open(r'000_Regression_Model.sav' , 'rb') as export_model:
+    with open(r'models\001_Regression_Model.sav' , 'rb') as export_model:
         regression_model = pickle.load(export_model) 
     # Load Classification Model
-    with open(r'000_Classification_Model.sav' , 'rb') as export_model:
+    with open(r'models\001_Classification_Model.sav' , 'rb') as export_model:
         classification_model = pickle.load(export_model) 
 
     print('App Initialized correctly!')
@@ -652,16 +652,52 @@ def parser_user_input(dataframe_input , reg_model , clf_model):
             
             # Hard code adjustment deppending of patients information
             
-            # 1. Remission odds decline especially >50–60 years of age.
-            print('Adjustment of DM likelihood')
+            # Remission odds decline especially >50–60 years of age.
+            print(f"Adjustment of DM likelihood for column {probas_columns[counter]}")
             print(f"Original probs: {predicted_probas}")
             predicted_probas = np.select(condlist = [(predictions_df['age_years'] > 50)&(predictions_df['age_years'] < 60)],
-                                         choicelist = [np.max(predicted_probas - 0.02 , 0)],
+                                         choicelist = [np.max([predicted_probas - 0.02 , [0]])],
                                          default = predicted_probas)
             print(f"Probas changed by age: {predicted_probas}")
-
+            # BMI threshold impact (lower BMI = better remission odds)
+            predicted_probas = np.select(condlist = [predictions_df['bmi3'] > 30,
+                                                     predictions_df['bmi6'] > 30,
+                                                     predictions_df['bmi12'] > 30,
+                                                     predictions_df['bmi18'] > 30,
+                                                     predictions_df['bmi2y'] > 30,
+                                                     predictions_df['bmi3y'] > 30,
+                                                     predictions_df['bmi4y'] > 30,
+                                                     predictions_df['bmi5y'] > 30],
+                                         choicelist = [np.min([predicted_probas + 0.10 , [1]]),
+                                                       np.min([predicted_probas + 0.10 , [1]]),
+                                                       np.min([predicted_probas + 0.10 , [1]]),
+                                                       np.min([predicted_probas + 0.10 , [1]]),
+                                                       np.min([predicted_probas + 0.10 , [1]]),
+                                                       np.min([predicted_probas + 0.10 , [1]]),
+                                                       np.min([predicted_probas + 0.10 , [1]]),
+                                                       np.min([predicted_probas + 0.10 , [1]])],
+                                         default = predicted_probas)
+            print(f"Probas changed by BMI: {predicted_probas}")
+            # Hypertension reduces remission odds
+            predicted_probas = np.select(condlist = [predictions_df['hypertension'].values[0] == 1],
+                                         choicelist = [np.min([predicted_probas + 0.03 , [1]])],
+                                         default = predicted_probas)
+            print(f"Probas changed by Hypertension: {predicted_probas}")
+            # Surgery Type
+            predicted_probas = np.select(condlist = [predictions_df['surgery'].values[0] == 2], #LRYGB helps to reduce DM odds
+                                         choicelist = [np.max([predicted_probas - 0.05 , [0]])],
+                                         default = predicted_probas)
+            print(f"Probas changed by Syrgery Type: {predicted_probas}")
             
-    
+            # Re compute DM class due odds changes
+            print(f"Original class: {predicted_values}")
+            predicted_values = np.select(condlist = [predicted_probas > 0.5],
+                                         choicelist = [1.],
+                                         default = [0.])
+            print(f"Updated class {predicted_values}")
+
+
+
             # Update the DataFrame with predictions
             for (row_index, target_column , prob_column), prediction , probas in zip(rows_to_update, predicted_values , predicted_probas):
                 df_final.at[row_index, target_column] = prediction
